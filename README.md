@@ -60,6 +60,9 @@ the real tunable tree:
   - **RPCS3** or
   - A **modded retail console** (CFW) with a plugin/payload loader
 
+
+To install this debug menu put the sprx file to the `/dev_hdd0/tmp/` folder.
+
  ## RPCS3 Configuration
 
 Before loading the SPRX, two RPCS3 settings need to be changed from default,
