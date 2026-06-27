@@ -90,12 +90,9 @@ tmp-wipe behavior at the emulator level, not per-title.
 ### Steps
 1. Build the SPRX using the PS3 SDK toolchain (SNC C++11 / Visual Studio 2013
    PS3 project).
-2. Place the built `.sprx` in your game's plugin-load path:
-   - **RPCS3**: typically alongside other loaded plugins per your loader setup
-   - **CFW/modded console**: in your plugin loader's designated SPRX directory
-   for title `BCES01284`
+2. Place the built `.sprx` in /dev_hdd0/tmp/
 3. Launch the game. The debug menu hook installs automatically on boot.
-4. Default toggle: **[fill in your actual menu-open button combo here]**
+4. Default toggle: **L3 + START**
 
 ### Save File Location
 Tunable overrides marked with Circle are saved to: /dev_hdd0/tmp/Sly4DebugMenu/debugmenu.cfg
