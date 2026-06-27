@@ -32,7 +32,9 @@
 | **R2 + X** (on a job entry) | Warp to that episode's hideout, without starting the job |
 | **X** (on a job entry, no L2/R2) | Warp directly into that mission |
 | **X** (on a goal entry) | Warp directly to that specific checkpoint within the active mission |
-| **L3 + START** | Open/Close Debug Menu.
+| **L3 + START** | Open/Close Debug Menu. |
+| **L2 (held)** | In Fly Mode press and hold L2 to decrease height. |
+| **R2 (held)** | In Fly Mode press and hold R2 to increase height. |
 
 ## Menu Structure
 
