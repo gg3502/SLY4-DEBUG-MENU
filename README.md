@@ -61,7 +61,7 @@ the real tunable tree:
   - A **modded retail console** (CFW) with a plugin/payload loader
 
 
-To install this debug menu put the sprx file to the `/dev_hdd0/tmp/` folder.
+To install this debug menu put the sprx file to the `/dev_hdd0/tmp/` folder and replace the **BCES01284** version's EBOOT.BIN with the one from this github page
 
  ## RPCS3 Configuration
 
