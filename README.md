@@ -59,8 +59,33 @@ the real tunable tree:
 ### Requirements
 - Sly Cooper: Thieves in Time (PS3, Title ID **BCES01284**)
 - A way to load a custom SPRX into the game process — either:
-  - **RPCS3** with a debug build/plugin loader, or
+  - **RPCS3** or
   - A **modded retail console** (CFW) with a plugin/payload loader
+
+ ## RPCS3 Configuration
+
+Before loading the SPRX, two RPCS3 settings need to be changed from default,
+or the menu (and potentially the game itself) will misbehave:
+
+### 1. PPU Decoder → Interpreter (static)
+Go to **Settings → CPU** and set **PPU Decoder** to **Interpreter (static)**.
+The default PPU decoder (recompiler/LLVM) does not play well with the runtime
+hooking technique this mod uses — function detours can silently fail to land
+correctly, or cause crashes, under the recompiler. Interpreter mode is slower
+but reliable for this kind of live code patching.
+
+### 2. Disable "Empty /dev_hdd0/tmp/ Folder on Game Boot"
+Go to **Settings → Advanced** (or **Emulator**, depending on your RPCS3
+version) and find the option that empties `/dev_hdd0/tmp/` on boot — turn
+this **off**.
+
+This is required because the debug menu's save file lives at: /dev_hdd0/tmp/Sly4DebugMenu/debugmenu.cfg
+
+If this folder gets wiped on every boot (RPCS3's default behavior for
+`/dev_hdd0/tmp/`), your saved tunable overrides will never persist between
+sessions — they'll be deleted the moment you relaunch the game. This setting
+should be disabled **globally** (not per-game), since RPCS3 applies the
+tmp-wipe behavior at the emulator level, not per-title.
 
 ### Steps
 1. Build the SPRX using the PS3 SDK toolchain (SNC C++11 / Visual Studio 2013
