@@ -1,8 +1,5 @@
 # Sly Cooper: Thieves in Time — Custom Debug Menu
 
-A reverse-engineered, from-scratch recreation of Sly 4's internal developer debug
-menu, built via SPRX injection on PS3 (RPCS3 and real devkit/modded console).
-
 ## Features
 
 - **Tunable browser** — navigate the game's internal tunable registry by dotted
@@ -35,6 +32,7 @@ menu, built via SPRX injection on PS3 (RPCS3 and real devkit/modded console).
 | **R2 + X** (on a job entry) | Warp to that episode's hideout, without starting the job |
 | **X** (on a job entry, no L2/R2) | Warp directly into that mission |
 | **X** (on a goal entry) | Warp directly to that specific checkpoint within the active mission |
+| **L3 + START** | Open/Close Debug Menu.
 
 ## Menu Structure
 
@@ -86,13 +84,6 @@ If this folder gets wiped on every boot (RPCS3's default behavior for
 sessions — they'll be deleted the moment you relaunch the game. This setting
 should be disabled **globally** (not per-game), since RPCS3 applies the
 tmp-wipe behavior at the emulator level, not per-title.
-
-### Steps
-1. Build the SPRX using the PS3 SDK toolchain (SNC C++11 / Visual Studio 2013
-   PS3 project).
-2. Place the built `.sprx` in /dev_hdd0/tmp/
-3. Launch the game. The debug menu hook installs automatically on boot.
-4. Default toggle: **L3 + START**
 
 ### Save File Location
 Tunable overrides marked with Circle are saved to: /dev_hdd0/tmp/Sly4DebugMenu/debugmenu.cfg
