@@ -36,6 +36,22 @@
 | **L2 (held)** | In Fly Mode press and hold L2 to decrease height. |
 | **R2 (held)** | In Fly Mode press and hold R2 to increase height. |
 
+### FreeCam Controls (while FreeCam is enabled)
+
+| Button | Action |
+|---|---|
+| **Left Stick** | Move the camera (forward/back, strafe left/right) |
+| **Right Stick** | Look around (yaw/pitch) |
+| **L1 (held)** | Decrease camera height |
+| **R1 (held)** | Increase camera height |
+| **L2 (held)** | Move slower (precision mode) |
+| **R2 (held)** | Move faster |
+
+Player movement and controller input are automatically disabled while FreeCam
+is active, and restored when it's turned off. FreeCam, along with slow-motion
+and movement-speed options, is accessible from the **FreeCam** category in
+the Tuning browser.
+
 ## Menu Structure
 
 [Debug Menu]
