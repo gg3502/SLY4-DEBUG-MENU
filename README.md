@@ -72,6 +72,10 @@ the real tunable tree:
 
 ## Installation
 
+## Prerequisites
+Visual Studio 2013+
+Sony PS3 4.75+ SDK w/ Visual Studio Integration* (*not included obviously)
+
 ### Requirements
 - Sly Cooper: Thieves in Time (PS3, Title ID **BCES01284**)
 - A way to load a custom SPRX into the game process — either:
