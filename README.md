@@ -73,8 +73,9 @@ the real tunable tree:
 ## Installation
 
 ## Prerequisites
-Visual Studio 2013+
-Sony PS3 4.75+ SDK w/ Visual Studio Integration* (*not included obviously)
+- Visual Studio 2019 or newer
+- Sony PS3 4.75+ SDK with Visual Studio Integration (nothing is provided) 
+- [libpsutil](https://github.com/skiff/libpsutil)
 
 ### Requirements
 - Sly Cooper: Thieves in Time (PS3, Title ID **BCES01284**)
