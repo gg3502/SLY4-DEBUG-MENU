@@ -145,6 +145,24 @@ typedef void (*HudJobFailStart_t)(int screen, int a2, int a3, int a4, int msgHi,
 static OPD s_setBinocucomVisOpd = { (void*)0x365A54, (void*)0xF50800 };
 static OPD s_setCharSlotOpd = { (void*)0x36A5F0, (void*)0xF50800 };
 
+static OPD s_raycastOpd = { (void*)0x4A5000, (void*)0xF50800 };
+typedef int (*RaycastGround_t)(int physWorld, float* start, float* end, double length, int flags, float* hitOut, int filterEntity);
+
+static OPD s_calcBBoxOpd = { (void*)0x20E560, (void*)0xF50800 };
+typedef void (*CalcBBox_t)(float* aabbOut, int entity, char flag);
+
+static OPD s_findDefOpd = { (void*)0xC9FC8, (void*)0xF50800 };
+typedef int (*FindDef_t)(unsigned int hash);
+
+static OPD s_groundRaycastOpd = { (void*)0x1D1E0, (void*)0xF50800 };
+typedef int (*GroundRaycast_t)(float* start, float* end, float* hitOut);
+
+typedef void (*EndVertices_t)(int cmdBuf);
+static OPD s_endVerticesOpd = { (void*)0x523748, (void*)0xF50800 };
+EndVertices_t EndVertices = (EndVertices_t)&s_endVerticesOpd;
+
+
+
 typedef int  (*SetBinocucomVis_t)(char visible);
 typedef void (*SetCharSlot_t)(int** slotPtr, int* charDef, int parentEntity);
 
@@ -169,6 +187,17 @@ static char g_LookAtHookStorage[sizeof(libpsutil::memory::detour)];
 typedef float* (*CalcMatrixFn_t)(int, float*, float*, float*);
 libpsutil::memory::detour* g_CalcMatrixHook;
 static char g_CalcMatrixHookStorage[sizeof(libpsutil::memory::detour)];
+
+static libpsutil::memory::detour* g_SetActiveHook = nullptr;
+static char g_SetActiveStorage[sizeof(libpsutil::memory::detour)];
+
+static libpsutil::memory::detour* g_SetCameraHook = nullptr;
+static char g_SetCameraStorage[sizeof(libpsutil::memory::detour)];
+
+typedef int (*SetCamera_t)(int renderTarget, float* viewMat);
+
+static libpsutil::memory::detour* g_Post3DHUDHook = nullptr;
+static char g_Post3DHUDStorage[sizeof(libpsutil::memory::detour)];
 
 typedef void (*ToggleCollision_t)(int, int, int);
 
@@ -207,6 +236,14 @@ void QueueBinocucom(unsigned int leftHash, unsigned int rightHash) {
     g_HasPendingBinocu = true;
 }
 
+static bool  g_LevelEditorEnabled = false;
+static float g_OrbitPivot[3] = {};   // the point we orbit around
+static float g_OrbitYaw = 0.0f;
+static float g_OrbitPitch = 0.0f;
+static float g_OrbitRadius = 10.0f;
+static bool  g_OrbitInitialized = false;
+
+static bool g_SnapToGround = false;
 static float g_SpawnRotation[3] = { 0.0f, 0.0f, 0.0f };
 static float g_SpawnScale = 1.0f;   // uniform scale
 static unsigned int g_SelectedEntityHash = 0;
@@ -215,12 +252,17 @@ static char g_SelectedEntityName[64] = {};
 // Index of the entity category currently being browsed under the "Entities" menu.
 static int g_SelectedEntityCatIndex = -1;
 
+static volatile bool g_HasPendingSceneLoad = false;
 static volatile bool g_HasPendingSpawn = false;
 static unsigned int   g_PendingSpawnHash = 0;
 static bool           g_PendingSpawnSmart = false; // true=SpawnEntitySmart, false=SpawnPropAtPlayer
 static int g_SelectedWorldIndex = -1;
 static int g_SelectedTypeIndex = -1;
 
+static float g_FreeCamVP[16] = {};
+static bool g_FreeCamVPValid = false;
+static float g_FreeCamViewMatrix[16] = {};
+static bool g_FreeCamViewMatrixValid = false;
 static float g_ViewProjMatrix[16] = {};
 static bool g_ViewProjValid = false;
 static float g_ViewMatrix[16] = {};
@@ -306,6 +348,11 @@ static char g_oskPrompt[128] = {};
 
 static uint16_t g_oskResultBuffer[CELL_OSKDIALOG_STRING_SIZE + 1] = {};
 static CellOskDialogCallbackReturnParam g_oskOutputInfo = {};
+
+
+
+static int g_ActiveCameraRenderTarget = 0;
+static int g_ActiveCameraEntity = 0;
 
 static bool g_FreeCamEnabled = false;
 static float g_FreeCamPos[3] = { 0.0f, 0.0f, 0.0f };
@@ -413,6 +460,9 @@ static char        g_ScenePath[128] = {};
 static bool g_IsLoadingScene = false;
 static char        g_DisplaySceneName[64] = {};
 
+
+void DrawOrbitPivotWith3D(float* cmdBuf);
+void DrawOrbitPivot();
 int StrLen(const char* s);
 static int BuildAndSpawn(unsigned int entityHash, float px, float py, float pz);
 static bool EnsureSaveDirectory(const char* path);
@@ -2014,10 +2064,9 @@ static const char* g_SceneMenuItems[] = {
     "Load Scene",
     "Clear List",
     "Spawn Entity",
-    "FreeCam",
-    "FreeCam Speed"
+    "Level Editor Cam",
 };
-static const int g_SceneMenuItemCount = 6;
+static const int g_SceneMenuItemCount = 5;
 
 static bool g_EnteredTuningViaScene = false;
 
@@ -2076,6 +2125,59 @@ TunableType GetTunableType(unsigned int vtable)
     if (vtable == VTABLE_COLOR) return TT_COLOR;
     if (vtable == VTABLE_STRING_HASH) return TT_STRING_HASH;
     return TT_UNKNOWN;
+}
+
+
+int Post3DHUDHook(int a1) {
+    // Draw BEFORE original — our draws get flushed by original's Flush call
+    if (g_LevelEditorEnabled) {
+        int gameMgr = *(int*)0xF65CA0;
+        if (gameMgr) {
+            int renderObj = *(int*)(gameMgr + 0x1285E4);
+            if (renderObj) {
+                float* cmdBuf = *(float**)(renderObj + 12);
+                if (cmdBuf && (unsigned int)cmdBuf > 0x10000) {
+                    DrawOrbitPivotWith3D(cmdBuf);
+                }
+            }
+        }
+    }
+
+    return g_Post3DHUDHook->invoke<int>(a1);
+}
+
+int SetActiveHook(int entity, int active) {
+    int ret = g_SetActiveHook->invoke<int>(entity, active);
+
+    if (active) {
+        int rt = *(int*)(entity + 364);
+        if (rt) {
+            g_ActiveCameraEntity = entity;
+            g_ActiveCameraRenderTarget = rt;
+        }
+    }
+    else if (entity == g_ActiveCameraEntity) {
+        g_ActiveCameraEntity = 0;
+        g_ActiveCameraRenderTarget = 0;
+    }
+
+    return ret;
+}
+
+bool GetGroundY(float x, float y, float z, float& outY) {
+    // Start well above, end well below
+    float start[3] = { x, y + 100.0f, z };
+    float end[3] = { x, y - 500.0f, z };
+    float hitPos[3] = {};
+
+    GroundRaycast_t Raycast = (GroundRaycast_t)&s_groundRaycastOpd;
+    int hit = Raycast(start, end, hitPos);
+
+    if (hit) {
+        outY = hitPos[1];
+        return true;
+    }
+    return false;
 }
 
 const char* FindJobNameByHash(unsigned int hash) {
@@ -2256,30 +2358,23 @@ bool LoadSceneFile() {
 }
 
 void SpawnLoadedScene() {
-    int count = g_SavedEntityCount;  // capture BEFORE loop — fixed size
-    printf("[Scene] spawning %d entities\n", count);
+    int count = g_SavedEntityCount;
+    printf("[Scene] spawning %d entities count=%d\n", count, count);
 
-    float savedRotX = g_SpawnRotation[0];
-    float savedRotY = g_SpawnRotation[1];
-    float savedRotZ = g_SpawnRotation[2];
-    float savedScale = g_SpawnScale;
+    g_IsLoadingScene = true;
 
-    g_IsLoadingScene = true;   // prevent tracking during load
     for (int i = 0; i < count; i++) {
         SavedEntity& e = g_SavedEntities[i];
+        printf("[Scene] entity %d hash=0x%08X\n", i, e.hash);
+
         g_SpawnRotation[0] = e.rotX;
         g_SpawnRotation[1] = e.rotY;
         g_SpawnRotation[2] = e.rotZ;
         g_SpawnScale = e.scale;
         BuildAndSpawn(e.hash, e.posX, e.posY, e.posZ);
     }
+
     g_IsLoadingScene = false;
-
-    g_SpawnRotation[0] = savedRotX;
-    g_SpawnRotation[1] = savedRotY;
-    g_SpawnRotation[2] = savedRotZ;
-    g_SpawnScale = savedScale;
-
     printf("[Scene] spawn complete\n");
 }
 
@@ -2386,6 +2481,14 @@ static void CopyNameSafe(char* dest, const char* src, int maxLen) {
     dest[i] = 0;
 }
 
+float MySqrtf(float x) {
+    if (x <= 0.0f) return 0.0f;
+    float guess = x * 0.5f;
+    for (int i = 0; i < 8; i++)
+        guess = (guess + x / guess) * 0.5f;
+    return guess;
+}
+
 float MyFabsf(float x) {
     return (x < 0.0f) ? -x : x;
 }
@@ -2431,7 +2534,6 @@ float MyCosf(float x) {
     return MySinf(shifted);
 }
 
-
 static unsigned int GetPlayerPositionRef()
 {
     unsigned int base = *(unsigned int*)0xF65CA0;
@@ -2443,6 +2545,111 @@ static unsigned int GetPlayerPositionRef()
 
     return playerRef;
 }
+
+int SetCameraHook(int renderTarget, float* viewMat) {
+    bool anyMode = g_FreeCamEnabled || g_LevelEditorEnabled;
+
+    if (anyMode &&
+        g_ActiveCameraRenderTarget &&
+        renderTarget == g_ActiveCameraRenderTarget) {
+
+        // Initialize from current view on first enable
+        if (!g_FreeCamInitialized && g_FreeCamEnabled) {
+            float tx = viewMat[12], ty = viewMat[13], tz = viewMat[14];
+            g_FreeCamPos[0] = -(viewMat[0] * tx + viewMat[4] * ty + viewMat[8] * tz);
+            g_FreeCamPos[1] = -(viewMat[1] * tx + viewMat[5] * ty + viewMat[9] * tz);
+            g_FreeCamPos[2] = -(viewMat[2] * tx + viewMat[6] * ty + viewMat[10] * tz);
+            g_FreeCamYaw = 0.0f;
+            g_FreeCamPitch = 0.0f;
+            g_FreeCamInitialized = true;
+        }
+
+        if (!g_OrbitInitialized && g_LevelEditorEnabled) {
+            unsigned int playerPosRef = GetPlayerPositionRef();
+            if (playerPosRef) {
+                g_OrbitPivot[0] = *(float*)(playerPosRef + 144);
+                g_OrbitPivot[1] = *(float*)(playerPosRef + 148);
+                g_OrbitPivot[2] = *(float*)(playerPosRef + 152);
+            }
+            else {
+                float tx = viewMat[12], ty = viewMat[13], tz = viewMat[14];
+                g_OrbitPivot[0] = -(viewMat[0] * tx + viewMat[4] * ty + viewMat[8] * tz);
+                g_OrbitPivot[1] = -(viewMat[1] * tx + viewMat[5] * ty + viewMat[9] * tz);
+                g_OrbitPivot[2] = -(viewMat[2] * tx + viewMat[6] * ty + viewMat[10] * tz);
+            }
+            g_OrbitYaw = 0.0f;
+            g_OrbitPitch = 0.3f;
+            g_OrbitRadius = 10.0f;
+            g_OrbitInitialized = true;
+        }
+
+        float ex, ey, ez;
+        float mat[16];
+
+        if (g_FreeCamEnabled) {
+            float cp = MyCosf(g_FreeCamPitch), sp = MySinf(g_FreeCamPitch);
+            float cy = MyCosf(g_FreeCamYaw), sy = MySinf(g_FreeCamYaw);
+
+            float rx = cy, ry = 0.0f, rz = -sy;
+            float ux = sy * sp, uy = cp, uz = cy * sp;
+            float fx = sy * cp, fy = -sp, fz = cy * cp;
+
+            ex = g_FreeCamPos[0];
+            ey = g_FreeCamPos[1];
+            ez = g_FreeCamPos[2];
+
+            mat[0] = rx;  mat[1] = ux;  mat[2] = fx;  mat[3] = 0;
+            mat[4] = ry;  mat[5] = uy;  mat[6] = fy;  mat[7] = 0;
+            mat[8] = rz;  mat[9] = uz;  mat[10] = fz; mat[11] = 0;
+            mat[12] = -(rx * ex + ry * ey + rz * ez);
+            mat[13] = -(ux * ex + uy * ey + uz * ez);
+            mat[14] = -(fx * ex + fy * ey + fz * ez);
+            mat[15] = 1;
+
+        }
+        else {
+            // Level Editor orbit camera
+            float cp = MyCosf(g_OrbitPitch), sp = MySinf(g_OrbitPitch);
+            float cy = MyCosf(g_OrbitYaw), sy = MySinf(g_OrbitYaw);
+
+            ex = g_OrbitPivot[0] - g_OrbitRadius * cp * sy;
+            ey = g_OrbitPivot[1] - g_OrbitRadius * sp;
+            ez = g_OrbitPivot[2] - g_OrbitRadius * cp * cy;
+
+            float viewYaw = g_OrbitYaw + 3.14159265f;
+            float viewPitch = -g_OrbitPitch;
+
+            float vcp = MyCosf(viewPitch), vsp = MySinf(viewPitch);
+            float vcy = MyCosf(viewYaw), vsy = MySinf(viewYaw);
+
+            float rx = vcy, ry = 0.0f, rz = -vsy;
+            float ux = vsy * vsp, uy = vcp, uz = vcy * vsp;
+            float fx = vsy * vcp, fy = -vsp, fz = vcy * vcp;
+
+            mat[0] = rx;  mat[1] = ux;  mat[2] = fx;  mat[3] = 0;
+            mat[4] = ry;  mat[5] = uy;  mat[6] = fy;  mat[7] = 0;
+            mat[8] = rz;  mat[9] = uz;  mat[10] = fz; mat[11] = 0;
+            mat[12] = -(rx * ex + ry * ey + rz * ez);
+            mat[13] = -(ux * ex + uy * ey + uz * ez);
+            mat[14] = -(fx * ex + fy * ey + fz * ez);
+            mat[15] = 1;
+        }
+
+        int ret = g_SetCameraHook->invoke<int>(renderTarget, mat);
+        return ret;
+    }
+
+    if (!g_FreeCamEnabled && !g_LevelEditorEnabled) {
+        g_FreeCamInitialized = false;
+        g_OrbitInitialized = false;
+        g_FreeCamVPValid = false;
+    }
+
+    return g_SetCameraHook->invoke<int>(renderTarget, viewMat);
+}
+
+
+
 
 static unsigned int GetWritablePlayerPosBase()
 {
@@ -3053,6 +3260,48 @@ void DrawDebugLine(float x1, float y1, float x2, float y2, float z, unsigned cha
     unsigned char* c2 = (unsigned char*)(v + 9);
     c2[0] = r; c2[1] = g; c2[2] = b; c2[3] = a;
     // gap bytes (16-23, 40-47) intentionally left untouched, matching the working radar function exactly
+}
+
+void DrawDebugLine3D(float x1, float y1, float z1,
+    float x2, float y2, float z2,
+    unsigned char r, unsigned char g,
+    unsigned char b, unsigned char a) {
+
+    unsigned int episodeMgr = *(unsigned int*)0xF64C20;
+    if (!episodeMgr) return;
+
+    int gameMgr = *(int*)0xF65CA0;
+    if (!gameMgr) return;
+    int renderObj = *(int*)(gameMgr + 0x1285E4);
+    if (!renderObj) return;
+    float* cmdBuf = *(float**)(renderObj + 12);
+    if (!cmdBuf) return;
+    if ((unsigned int)cmdBuf < 0x10000) return;
+
+    static OPD s_endVerticesOpd = { (void*)0x523748, (void*)0xF50800 };
+    typedef void (*EndVertices_t)(int);
+    EndVertices_t EndVertices = (EndVertices_t)&s_endVerticesOpd;
+
+    int material = MaterialLookup(0);
+    BindMaterial((int)cmdBuf, material);
+    BeginBatch((int)cmdBuf, (float*)&ApeDebug_DefaultBatchState);
+
+    struct { void* ptr; short count; } vertHandle;
+    AllocVerts(&vertHandle, (int)cmdBuf, 2, 2);
+
+    float* v = (float*)vertHandle.ptr;
+    if (!v) return;
+    if ((unsigned int)v < 0x10000) return;
+
+    v[0] = x1; v[1] = y1; v[2] = z1;
+    unsigned char* c1 = (unsigned char*)(v + 3);
+    c1[0] = r; c1[1] = g; c1[2] = b; c1[3] = a;
+
+    v[6] = x2; v[7] = y2; v[8] = z2;
+    unsigned char* c2 = (unsigned char*)(v + 9);
+    c2[0] = r; c2[1] = g; c2[2] = b; c2[3] = a;
+
+    EndVertices((int)cmdBuf);
 }
 
 void DrawSpawnRotationIndicator() {
@@ -3667,51 +3916,35 @@ void GetGoalColorIndices(int goalCount, int* outCurrentIdx)
 int CalcRenderMatricesHook(int renderTarget, char a2) {
     int ret = g_CalcRenderMatricesHook->invoke<int>(renderTarget, a2);
 
-    float* vp = (float*)(renderTarget + 880);
-    float m15 = vp[15];
-    unsigned int m15bits = *(unsigned int*)&m15;
-
-    // Capture the projection-only matrix (diagonal, positive m15)
-    if (m15bits == 0x40F66666 && vp[1] == 0.0f && vp[2] == 0.0f) {
-        for (int i = 0; i < 16; i++)
-            g_ProjMatrix[i] = vp[i];
-        g_ProjMatrixValid = true;
+    // Capture VP after CalcRenderMatrices runs — now includes our FreeCam view
+    if (g_ActiveCameraRenderTarget && renderTarget == g_ActiveCameraRenderTarget) {
+        float* vp = (float*)(renderTarget + 880);
+        for (int i = 0; i < 16; i++) {
+            g_ViewProjMatrix[i] = vp[i];
+            g_FreeCamVP[i] = vp[i];
+        }
+        g_ViewProjValid = true;
+        g_FreeCamVPValid = true;
     }
 
     return ret;
 }
 
 bool WorldToScreen(float wx, float wy, float wz, float* sx, float* sy) {
-    if (!g_ViewMatrixValid || !g_ProjMatrixValid) return false;
+    if (!g_ViewProjValid) return false;
 
-    float* v = g_ViewMatrix;
-    float* p = g_ProjMatrix;
+    float* m = g_ViewProjMatrix;
 
-    float vx = v[0] * wx + v[4] * wy + v[8] * wz + v[12];
-    float vy = v[1] * wx + v[5] * wy + v[9] * wz + v[13];
-    float vz = v[2] * wx + v[6] * wy + v[10] * wz + v[14];
-    float vw = v[3] * wx + v[7] * wy + v[11] * wz + v[15];
+    float cx = m[0] * wx + m[4] * wy + m[8] * wz + m[12];
+    float cy = m[1] * wx + m[5] * wy + m[9] * wz + m[13];
+    float cw = m[3] * wx + m[7] * wy + m[11] * wz + m[15];
 
-    float cx = p[0] * vx + p[4] * vy + p[8] * vz + p[12] * vw;
-    float cy = p[1] * vx + p[5] * vy + p[9] * vz + p[13] * vw;
-    float cw = p[3] * vx + p[7] * vy + p[11] * vz + p[15] * vw;
+    if (cw < 0.001f) return false;  // behind camera only
 
-    printf("[WTS3] vx=0x%08X vy=0x%08X cw=0x%08X\n",
-        *(unsigned int*)&vx, *(unsigned int*)&vy, *(unsigned int*)&cw);
+    *sx = (cx / cw + 1.0f) * 0.5f;
+    *sy = (1.0f - cy / cw) * 0.5f;
 
-    if (cw < 0.001f) return false;
-
-    float ndcX = cx / cw;
-    float ndcY = cy / cw;
-
-    *sx = (ndcX + 1.0f) * 0.5f;
-    *sy = (1.0f - ndcY) * 0.5f;
-
-    printf("[WTS3] sx=0x%08X sy=0x%08X\n",
-        *(unsigned int*)sx, *(unsigned int*)sy);
-
-    if (*sx < 0.0f || *sx > 1.0f || *sy < 0.0f || *sy > 1.0f) return false;
-    return true;
+    return true;  // don't clip to screen bounds
 }
 
 
@@ -3897,6 +4130,31 @@ void DumpAllEntityDefs() {
 }
 
 static int BuildAndSpawn(unsigned int entityHash, float px, float py, float pz) {
+    printf("[Spawn] A hash=0x%08X\n", entityHash);
+    float spawnY = py;
+    printf("[Spawn] B spawnY set\n");
+
+    if (g_SnapToGround && !g_IsLoadingScene) {
+        printf("[Spawn] C snap\n");
+        FindDef_t FindDef = (FindDef_t)&s_findDefOpd;
+        int entityDef = FindDef(entityHash);
+        if (entityDef) {
+            float groundY;
+            if (GetGroundY(px, py, pz, groundY)) {
+                float aabb[8] = {};
+                CalcBBox_t CalcBBox = (CalcBBox_t)&s_calcBBoxOpd;
+                CalcBBox(aabb, entityDef, 0);
+                float minY = aabb[1];
+                float maxY = aabb[5];
+                float height = maxY - minY;
+                spawnY = (height > 0.0f && height < 100.0f) ?
+                    groundY + (height * 0.5f) : groundY + 0.5f;
+            }
+        }
+        printf("[Spawn] C snap done spawnY=%d\n", (int)spawnY);
+    }
+
+    printf("[Spawn] D rotation\n");
     float rx = g_SpawnRotation[0] * 3.14159265f / 180.0f;
     float ry = g_SpawnRotation[1] * 3.14159265f / 180.0f;
     float rz = g_SpawnRotation[2] * 3.14159265f / 180.0f;
@@ -3904,32 +4162,34 @@ static int BuildAndSpawn(unsigned int entityHash, float px, float py, float pz) 
     float cy = MyCosf(ry), sy = MySinf(ry);
     float cz = MyCosf(rz), sz = MySinf(rz);
 
+    printf("[Spawn] E params\n");
     EntityDefSpawnParams params = {};
     params.vtable = (void*)0xB12260;
     params.m00 = cy * cz + sy * sx * sz;  params.m01 = -cy * sz + sy * sx * cz;  params.m02 = sy * cx;
     params.m10 = cx * sz;              params.m11 = cx * cz;             params.m12 = -sx;
     params.m20 = -sy * cz + cy * sx * sz;  params.m21 = sy * sz + cy * sx * cz;  params.m22 = cy * cx;
-    params.posX = px; params.posY = py; params.posZ = pz;
-    params.scaleX = params.scaleY = params.scaleZ = 1.0f;  // always 1, no post-spawn SetScale
+    params.posX = px; params.posY = spawnY; params.posZ = pz;
+    params.scaleX = params.scaleY = params.scaleZ = 1.0f;
     params.negOne_a = -1.0f; params.negOne_b = -1.0f;
     params.packedFlags = 0x9FE00000;
 
+    printf("[Spawn] F SpawnByHash\n");
     SpawnByHash_t SpawnByHash = (SpawnByHash_t)&s_spawnByHashOpd;
     int entity = SpawnByHash(entityHash, &params);
+    printf("[Spawn] G entity=0x%08X\n", entity);
 
-    if (entity) {
-        if (!g_IsLoadingScene && g_SavedEntityCount < MAX_SAVED_ENTITIES) {
-            SavedEntity& e = g_SavedEntities[g_SavedEntityCount++];
-            e.hash = entityHash;
-            e.posX = px; e.posY = py; e.posZ = pz;
-            e.rotX = g_SpawnRotation[0];
-            e.rotY = g_SpawnRotation[1];
-            e.rotZ = g_SpawnRotation[2];
-            e.scale = g_SpawnScale;
-        }
-        printf("[Spawn] entity=0x%08X\n", entity);
+    if (entity && !g_IsLoadingScene && g_SavedEntityCount < MAX_SAVED_ENTITIES) {
+        printf("[Spawn] H tracking\n");
+        SavedEntity& e = g_SavedEntities[g_SavedEntityCount++];
+        e.hash = entityHash;
+        e.posX = px; e.posY = spawnY; e.posZ = pz;
+        e.rotX = g_SpawnRotation[0];
+        e.rotY = g_SpawnRotation[1];
+        e.rotZ = g_SpawnRotation[2];
+        e.scale = 1.0f;
     }
 
+    printf("[Spawn] I done\n");
     return entity;
 }
 
@@ -3965,7 +4225,7 @@ void UpdateFreeCamInput()
     const float kFastMoveSpeed = 0.3f;    // R2: old default speed becomes "fast"
     const float kSlowMoveSpeed = 0.05f;   // L2: slow precision movement
     const float kHeightSpeed = 0.2f;
-    const float kPitchLimitUp = 0.3f;
+    const float kPitchLimitUp = 1.4f; // was 0.3
     const float kPitchLimitDown = 1.4f;
 
     float moveSpeed = g_FreeCamMoveSpeed;
@@ -3984,7 +4244,7 @@ void UpdateFreeCamInput()
     }
 
     float forwardX = MySinf(g_FreeCamYaw) * MyCosf(g_FreeCamPitch);
-    float forwardY = MySinf(g_FreeCamPitch);
+    float forwardY = -MySinf(g_FreeCamPitch);
     float forwardZ = MyCosf(g_FreeCamYaw) * MyCosf(g_FreeCamPitch);
 
     // --- diagnostic, right after forwardY is computed ---
@@ -3998,13 +4258,13 @@ void UpdateFreeCamInput()
     float rightZ = -MySinf(g_FreeCamYaw);
 
     if (AbsInt(ly) > kStickDeadzone) {
-        float move = -(ly / 128.0f) * moveSpeed;
+        float move = (ly / 128.0f) * moveSpeed;
         g_FreeCamPos[0] += forwardX * move;
         g_FreeCamPos[1] += forwardY * move;
         g_FreeCamPos[2] += forwardZ * move;
     }
     if (AbsInt(lx) > kStickDeadzone) {
-        float move = -(lx / 128.0f) * moveSpeed;
+        float move = (lx / 128.0f) * moveSpeed;
         g_FreeCamPos[0] += rightX * move;
         g_FreeCamPos[2] += rightZ * move;
     }
@@ -4012,6 +4272,64 @@ void UpdateFreeCamInput()
     // R1/L1: height up/down, also respects the L2/R2 speed modifier
     if (curR1) g_FreeCamPos[1] += kHeightSpeed * (moveSpeed / kBaseMoveSpeed);
     if (curL1) g_FreeCamPos[1] -= kHeightSpeed * (moveSpeed / kBaseMoveSpeed);
+}
+
+void UpdateLevelEditorInput() {
+    if (!g_LevelEditorEnabled) return;
+    if (g_MenuVisible) return;
+
+    int lx = (int)g_RealPadData.button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X] - 128;
+    int ly = (int)g_RealPadData.button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y] - 128;
+    int rx = (int)g_RealPadData.button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X] - 128;
+    int ry = (int)g_RealPadData.button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y] - 128;
+
+    uint16_t digital2 = g_RealPadData.button[CELL_PAD_BTN_OFFSET_DIGITAL2];
+    bool curL1 = (digital2 & CELL_PAD_CTRL_L1) != 0;
+    bool curL2 = (digital2 & CELL_PAD_CTRL_L2) != 0;
+    bool curR1 = (digital2 & CELL_PAD_CTRL_R1) != 0;
+    bool curR2 = (digital2 & CELL_PAD_CTRL_R2) != 0;
+
+    const float kOrbitSpeed = 0.008f;  // was 0.03f
+    const float kZoomSpeed = 0.1f;    // was 0.3f
+    const float kMoveSpeed = 0.05f;   // was 0.15f
+
+    
+    // Right stick — orbit yaw/pitch, fixed speed
+    
+    if (AbsInt(rx) > kStickDeadzone)
+        g_OrbitYaw -= (rx / 128.0f) * kOrbitSpeed;
+    if (AbsInt(ry) > kStickDeadzone) {
+        g_OrbitPitch -= (ry / 128.0f) * kOrbitSpeed;  // negated — stick down = camera down
+        if (g_OrbitPitch > 1.5f) g_OrbitPitch = 1.5f;
+        if (g_OrbitPitch < -1.5f) g_OrbitPitch = -1.5f;
+    }
+
+    // R1/R2 — zoom in/out (radius only, no pivot movement)
+    
+    if (curR1) { g_OrbitRadius -= kZoomSpeed; if (g_OrbitRadius < 1.0f)   g_OrbitRadius = 1.0f; }
+    if (curR2) { g_OrbitRadius += kZoomSpeed; if (g_OrbitRadius > 500.0f) g_OrbitRadius = 500.0f; }
+
+    // Left stick — move pivot on XZ plane relative to orbit yaw
+    
+    float fwdX = MySinf(g_OrbitYaw);
+    float fwdZ = MyCosf(g_OrbitYaw);
+    float rightX = MyCosf(g_OrbitYaw);
+    float rightZ = -MySinf(g_OrbitYaw);
+
+    if (AbsInt(ly) > kStickDeadzone) {
+        float move = -(ly / 128.0f) * kMoveSpeed;
+        g_OrbitPivot[0] += fwdX * move;
+        g_OrbitPivot[2] += fwdZ * move;
+    }
+    if (AbsInt(lx) > kStickDeadzone) {
+        float move = -(lx / 128.0f) * kMoveSpeed;
+        g_OrbitPivot[0] += rightX * move;
+        g_OrbitPivot[2] += rightZ * move;
+    }
+
+    // L1/L2 — move pivot up/down
+    if (curL2) g_OrbitPivot[1] -= kMoveSpeed;
+    if (curL1) g_OrbitPivot[1] += kMoveSpeed;
 }
 
 
@@ -4078,14 +4396,22 @@ float* CalcMatrixHook(int a1, float* eyePos, float* targetPos, float* result) {
             g_FreeCamPos[2] + forwardZ
         };
 
+        // Let the engine compute the correct matrix format
         ret = g_CalcMatrixHook->invoke<float*>(a1, newEye, newTarget, result);
+
+        // Save the resulting matrix for CalcRenderMatricesHook to use
+        if (result) {
+            for (int i = 0; i < 16; i++)
+                g_FreeCamViewMatrix[i] = result[i];
+            g_FreeCamViewMatrixValid = true;
+        }
     }
     else {
         g_FreeCamInitialized = false;
         g_HasLastForward = false;
+        g_FreeCamViewMatrixValid = false;
         ret = g_CalcMatrixHook->invoke<float*>(a1, eyePos, targetPos, result);
     }
-
 
     return ret;
 }
@@ -4438,6 +4764,14 @@ void RebuildDisplayItems()
             item.isCategory = false; item.tunableIndex = -1;
             item.liveAddr = (unsigned int)&g_SpawnRotation[0] - 72;
             item.type = TT_VEC3;
+        }
+        if (g_DisplayItemCount < 256) {
+            DisplayItem& item = g_DisplayItems[g_DisplayItemCount++];
+            const char* label = g_SnapToGround ? "Snap to Ground: ON" : "Snap to Ground: OFF";
+            int k = 0; while (label[k]) { item.label[k] = label[k]; k++; } item.label[k] = '\0';
+            item.isCategory = false; item.tunableIndex = 5002;
+            item.liveAddr = 0;
+            item.type = TT_ACTION;
         }
         if (g_DisplayItemCount < 256) {
             DisplayItem& item = g_DisplayItems[g_DisplayItemCount++];
@@ -4834,7 +5168,7 @@ void PollInput()
                 }
                 else if (StrEqual(g_SceneMenuItems[g_SelectedIndex], "Load Scene")) {
                     if (LoadSceneFile()) {
-                        SpawnLoadedScene();
+                        g_HasPendingSceneLoad = true;  // defer to next frame
                     }
                 }
                 else if (StrEqual(g_SceneMenuItems[g_SelectedIndex], "Clear List")) {
@@ -4852,8 +5186,16 @@ void PollInput()
                     g_EnteredTuningViaScene = true;
                     RebuildDisplayItems();
                 }
-                else if (StrEqual(g_SceneMenuItems[g_SelectedIndex], "FreeCam")) {
-                    Action_ToggleFreeCam();
+                else if (StrEqual(g_SceneMenuItems[g_SelectedIndex], "Level Editor Cam")) {
+                    g_LevelEditorEnabled = !g_LevelEditorEnabled;
+                    if (g_LevelEditorEnabled) {
+                        g_FreeCamEnabled = false;
+                        g_FreeCamInitialized = false;
+                        g_OrbitInitialized = false;
+                    }
+                    else {
+                        g_OrbitInitialized = false;
+                    }
                 }
             }
 
@@ -5036,6 +5378,11 @@ void PollInput()
                 else if (!item.isCategory && item.tunableIndex == 5001) {
                     QueueSpawn(g_SelectedEntityHash, true);
                 }
+
+                else if (item.tunableIndex == 5002) {
+                    g_SnapToGround = !g_SnapToGround;
+                    RebuildDisplayItems();  // refresh to update ON/OFF label
+                }
                 else if (item.isCategory && item.tunableIndex >= 1000 && item.tunableIndex < 1000 + g_EpisodeCount) {
                     g_SelectedEpisodeIndex = item.tunableIndex - 1000;
                     int k = 0;
@@ -5195,6 +5542,7 @@ int PadGetDataHook(int port, CellPadData* data) {
 
     cellSysutilCheckCallback();
     ProcessOSK();
+    
 
     if (ret == CELL_OK && data->len > 0 && port == 0) {
         g_RealPadData = *data;
@@ -5236,6 +5584,11 @@ int PadGetDataHook(int port, CellPadData* data) {
         if (g_HasPendingBinocu) {
             g_HasPendingBinocu = false;
             ShowBinocucom(g_PendingBinocuLeft, g_PendingBinocuRight);
+        }
+
+        if (g_HasPendingSceneLoad) {
+            g_HasPendingSceneLoad = false;
+            SpawnLoadedScene();
         }
 
     }
@@ -5305,16 +5658,11 @@ void DrawMenu()
                 float arrowPos[3] = { pos[0] + 220.0f, pos[1], 0.0f };
                 QueueText(arrowPos, (int)">>", normalColor, 1.0);
             }
-            else if (StrEqual(g_SceneMenuItems[i], "FreeCam")) {
-                unsigned char freecamColor[4] = { 80, 255, 80, 255 };
+            else if (StrEqual(g_SceneMenuItems[i], "Level Editor Cam")) {
+                unsigned char onColor[4] = { 255, 180, 50, 255 };
                 unsigned char offColor[4] = { 255, 255, 255, 255 };
-                char* line = FormatStr("%s FreeCam: %s", cursor, g_FreeCamEnabled ? "ON" : "OFF");
-                QueueText(pos, (int)line, g_FreeCamEnabled ? freecamColor : offColor, 1.0);
-            }
-
-            else if (StrEqual(g_SceneMenuItems[i], "FreeCam Speed")) {
-                char* line = FormatStr("%s FreeCam Speed: %.2f", cursor, g_FreeCamMoveSpeed);
-                QueueText(pos, (int)line, normalColor, 1.0);
+                char* line = FormatStr("%s Level Editor Cam: %s", cursor, g_LevelEditorEnabled ? "ON" : "OFF");
+                QueueText(pos, (int)line, g_LevelEditorEnabled ? onColor : offColor, 1.0);
             }
 
             else {
@@ -5393,6 +5741,14 @@ void DrawMenu()
                 char* line = FormatStr("%s Spawn", cursor);
                 QueueText(pos, (int)line, spawnColor, 1.0);
             }
+
+            else if (item.tunableIndex == 5002) {
+                unsigned char col[4] = { 80, 255, 80, 255 };
+                unsigned char offCol[4] = { 255, 255, 255, 255 };
+                char* line = FormatStr("%s %s", cursor, item.label);
+                QueueText(pos, (int)line, g_SnapToGround ? col : offCol, 1.0);
+            }
+
             else if (item.type == TT_VEC3 && item.liveAddr) {
                 float x = *(float*)(item.liveAddr + 72);
                 float y = *(float*)(item.liveAddr + 76);
@@ -5654,27 +6010,94 @@ void InitOSKContext() {
     printf("[OSK] context initialized\n");
 }
 
+void DrawOrbitPivot() {
+    if (!g_LevelEditorEnabled) return;
+
+    float px = g_OrbitPivot[0];
+    float py = g_OrbitPivot[1];
+    float pz = g_OrbitPivot[2];
+
+    float len = g_OrbitRadius * 0.15f;
+    if (len < 0.5f)  len = 0.5f;
+    if (len > 30.0f) len = 30.0f;
+
+    // X axis — red
+    DrawDebugLine3D(px - len, py, pz, px + len, py, pz, 255, 50, 50, 255);
+    // Y axis — green
+    DrawDebugLine3D(px, py - len, pz, px, py + len, pz, 50, 255, 50, 255);
+    // Z axis — blue
+    DrawDebugLine3D(px, py, pz - len, px, py, pz + len, 50, 100, 255, 255);
+}
+
+void DrawLine3DOnCmdBuf(float* cmdBuf,
+    float x1, float y1, float z1,
+    float x2, float y2, float z2,
+    unsigned char r, unsigned char g,
+    unsigned char b, unsigned char a) {
+
+    // Skip BindMaterial — context might already have material bound
+    BeginBatch((int)cmdBuf, (float*)&ApeDebug_DefaultBatchState);
+
+    struct { void* ptr; short count; } vertHandle;
+    AllocVerts(&vertHandle, (int)cmdBuf, 2, 2);
+
+    float* v = (float*)vertHandle.ptr;
+    if (!v || (unsigned int)v < 0x10000) return;
+
+    v[0] = x1; v[1] = y1; v[2] = z1;
+    unsigned char* c1 = (unsigned char*)(v + 3);
+    c1[0] = r; c1[1] = g; c1[2] = b; c1[3] = a;
+
+    v[6] = x2; v[7] = y2; v[8] = z2;
+    unsigned char* c2 = (unsigned char*)(v + 9);
+    c2[0] = r; c2[1] = g; c2[2] = b; c2[3] = a;
+}
+
+void DrawOrbitPivotWith3D(float* cmdBuf) {
+    float px = g_OrbitPivot[0];
+    float py = g_OrbitPivot[1];
+    float pz = g_OrbitPivot[2];
+
+    float len = g_OrbitRadius * 0.15f;
+    if (len < 0.5f)  len = 0.5f;
+    if (len > 30.0f) len = 30.0f;
+
+    // X — red
+    //DrawLine3DOnCmdBuf(cmdBuf, px - len, py, pz, px + len, py, pz, 255, 50, 50, 255);
+    // Y — green
+    //DrawLine3DOnCmdBuf(cmdBuf, px, py - len, pz, px, py + len, pz, 50, 255, 50, 255);
+    // Z — blue
+  //  DrawLine3DOnCmdBuf(cmdBuf, px, py, pz - len, px, py, pz + len, 50, 100, 255, 255);
+
+
+    DrawLine3DOnCmdBuf(cmdBuf, -100, 0, 0, 100, 0, 0, 255, 0, 0, 255);  // giant red X line at world origin
+    DrawLine3DOnCmdBuf(cmdBuf, 0, -100, 0, 0, 100, 0, 0, 255, 0, 255);  // giant green Y line
+
+}
+
 int DrawAndSweepHook()
 {
     //printf("Inside DrawAndSweep Hook!");
 
     // In DrawAndSweepHook, always draw when valid:
     // In DrawAndSweepHook:
-  /*  if (g_ViewProjValid) {
+   /* if (g_ViewProjValid) {
         unsigned int playerPosRef = GetPlayerPositionRef();
         if (playerPosRef) {
             float px = *(float*)(playerPosRef + 144);
             float py = *(float*)(playerPosRef + 148);
             float pz = *(float*)(playerPosRef + 152);
             float sx, sy;
-            if (WorldToScreen(px, py + 1.0f, pz, &sx, &sy)) {
-                printf("[WTS] sx=0x%08X sy=0x%08X\n", *(unsigned int*)&sx, *(unsigned int*)&sy);
+            if (WorldToScreen(px, py + 2.0f, pz, &sx, &sy)) {
+                // Clamp to screen
+                if (sx < 0.0f) sx = 0.0f; if (sx > 1.0f) sx = 1.0f;
+                if (sy < 0.0f) sy = 0.0f; if (sy > 1.0f) sy = 1.0f;
+
                 float size = 0.05f;
-                // Draw a big box instead of a cross
-                DrawDebugLine(sx - size, sy - size, sx + size, sy - size, 0.0f, 255, 255, 0, 255); // top
-                DrawDebugLine(sx + size, sy - size, sx + size, sy + size, 0.0f, 255, 255, 0, 255); // right
-                DrawDebugLine(sx + size, sy + size, sx - size, sy + size, 0.0f, 255, 255, 0, 255); // bottom
-                DrawDebugLine(sx - size, sy + size, sx - size, sy - size, 0.0f, 255, 255, 0, 255); // left
+                DrawDebugLine(sx - size, sy - size, sx + size, sy - size, 0.0f, 255, 255, 0, 255);
+                DrawDebugLine(sx + size, sy - size, sx + size, sy + size, 0.0f, 255, 255, 0, 255);
+                DrawDebugLine(sx + size, sy + size, sx - size, sy + size, 0.0f, 255, 255, 0, 255);
+                DrawDebugLine(sx - size, sy + size, sx - size, sy - size, 0.0f, 255, 255, 0, 255);
             }
         }
     }*/
@@ -5685,7 +6108,10 @@ int DrawAndSweepHook()
     //UpdatePendingJobStart();
     UpdateGoalTeleportCooldown();
     UpdateFreeCamInput();
+    UpdateLevelEditorInput();
     DrawSpawnRotationIndicator();
+    //DrawOrbitPivot();
+
    // DrawSpawnRotationGizmo();
     //void* cmdBuf = GetCmdBuf();
     //DrawGrid(cmdBuf, identityMtx, 20, 20, 1.0f, 0xFFFFFFFFu);
@@ -5724,8 +6150,11 @@ extern "C" int _Sly4_DebugMenu_prx_entry(void)
 
     g_DrawSweepHook = new (g_DrawSweepHookStorage) libpsutil::memory::detour(0x56AEFC, (void*)DrawAndSweepHook);
     g_PadGetDataHook = new (g_PadGetDataHookStorage) libpsutil::memory::detour(0xABDEC4, (void*)PadGetDataHook);
-    g_CalcMatrixHook = new (g_CalcMatrixHookStorage) libpsutil::memory::detour(0x101A60, (void*)CalcMatrixHook);
-   // g_CalcRenderMatricesHook = new (g_CalcRenderMatricesStorage) libpsutil::memory::detour(0x5115F0, (void*)CalcRenderMatricesHook);
+   // g_CalcMatrixHook = new (g_CalcMatrixHookStorage) libpsutil::memory::detour(0x101A60, (void*)CalcMatrixHook);
+    g_CalcRenderMatricesHook = new (g_CalcRenderMatricesStorage) libpsutil::memory::detour(0x5115F0, (void*)CalcRenderMatricesHook);
+    g_SetActiveHook = new (g_SetActiveStorage) libpsutil::memory::detour(0xFA3CC, (void*)SetActiveHook);
+    g_SetCameraHook = new (g_SetCameraStorage) libpsutil::memory::detour(0x5201B0, (void*)SetCameraHook);
+   // g_Post3DHUDHook = new (g_Post3DHUDStorage) libpsutil::memory::detour(0x459B60, (void*)Post3DHUDHook);
     //g_LookAtHook = new (g_LookAtHookStorage) libpsutil::memory::detour(0x56A0D0, (void*)LookAtHook);
     //g_CameraUpdatePosHook = new (g_CameraUpdatePosHookStorage) libpsutil::memory::detour(0x101CC0, (void*)CameraUpdatePosHook);
    // g_IntegratorHook = new (g_IntegratorHookStorage) libpsutil::memory::detour(0x26C920, (void*)IntegratorHook);
